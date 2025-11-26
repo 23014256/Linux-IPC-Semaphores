@@ -18,107 +18,131 @@ Write the C Program using Linux Process API - Sempahores
 
 Execute the C Program for the desired output. 
 
-## PROGRAM:
+# PROGRAM:
 
 ## Write a C program that implements a producer-consumer system with two processes using Semaphores.
-```
-/*
- * sem.c  - demonstrates a basic producer-consumer
- *                            implementation.              */
-#include <stdio.h>	 /* standard I/O routines.              */
-#include <stdlib.h>      /* rand() and srand() functions        */
-#include <unistd.h>	 /* fork(), etc.                        */
-#include <time.h>	 /* nanosleep(), etc.                   */
-#include <sys/types.h>   /* various type definitions.           */
-#include <sys/ipc.h>     /* general SysV IPC structures         */
-#include <sys/sem.h>	 /* semaphore functions and structs.    */
-#define NUM_LOOPS	20	 /* number of loops to perform. */
-#if defined(__GNU_LIBRARY__) && !defined(_SEM_SEMUN_UNDEFINED)
-/* union semun is defined by including <sys/sem.h> */
-#else
-/* according to X/OPEN we have to define it ourselves */
 
+```c
+Program:
+
+/*
+ * sem.c - Producer-Consumer using Semaphores
+ */
+#include <stdio.h>      
+#include <stdlib.h>     
+#include <unistd.h>     
+#include <sys/types.h>  
+#include <sys/ipc.h>    
+#include <sys/sem.h>    
+#include <sys/wait.h>   
+#include <time.h>      
+
+#define NUM_LOOPS 10  // Number of producer-consumer cycles
+
+// Define union semun if not already available
 union semun {
-        int val;                    /* value for SETVAL */
-        struct semid_ds *buf;       /* buffer for IPC_STAT, IPC_SET */
-        unsigned short int *array;  /* array for GETALL, SETALL */
-        struct seminfo *__buf;      /* buffer for IPC_INFO */
+    int val;               
+    struct semid_ds *buf;  
+    unsigned short int *array; 
+    struct seminfo *__buf;
 };
-#endif
-int main(int argc, char* argv[])
-{
-    int sem_set_id;	      /* ID of the semaphore set.       */
-    union semun sem_val;      /* semaphore value, for semctl(). */
-    int child_pid;	      /* PID of our child process.      */
-    int i;		      /* counter for loop operation.    */
-    struct sembuf sem_op;     /* structure for semaphore ops.   */
-    int rc;		      /* return value of system calls.  */
-    struct timespec delay;    /* used for wasting time.         */
-/* create a private semaphore set with one semaphore in it, */
-    /* with access only to the owner.                           */
+
+// Function to wait (P operation) on semaphore
+void wait_semaphore(int sem_set_id) {
+    struct sembuf sem_op;
+    sem_op.sem_num = 0;
+    sem_op.sem_op = -1;  // Decrease semaphore value (Wait)
+    sem_op.sem_flg = 0;
+    semop(sem_set_id, &sem_op, 1);
+}
+
+// Function to signal (V operation) on semaphore
+void signal_semaphore(int sem_set_id) {
+    struct sembuf sem_op;
+    sem_op.sem_num = 0;
+    sem_op.sem_op = 1;  // Increase semaphore value (Signal)
+    sem_op.sem_flg = 0;
+    semop(sem_set_id, &sem_op, 1);
+}
+
+int main() {
+    int sem_set_id;
+    union semun sem_val;
+    int child_pid;
+
+    // Create a semaphore set with one semaphore
     sem_set_id = semget(IPC_PRIVATE, 1, 0600);
     if (sem_set_id == -1) {
-	perror("main: semget");
-	exit(1);
+        perror("semget");
+        exit(1);
     }
+
     printf("semaphore set created, semaphore set id '%d'.\n", sem_set_id);
-    /* intialize the first (and single) semaphore in our set to '0'. */
+
+    // Initialize semaphore to 0 (Consumer must wait for Producer)
     sem_val.val = 0;
-    rc = semctl(sem_set_id, 0, SETVAL, sem_val);
-    /* fork-off a child process, and start a producer/consumer job. */
-    child_pid = fork();
-    switch (child_pid) {
-	case -1:	/* fork() failed */
-	    perror("fork");
-	    exit(1);
-case 0:		/* child process here */
-	    for (i=0; i<NUM_LOOPS; i++) {
-		/* block on the semaphore, unless it's value is non-negative. */
-		sem_op.sem_num = 0;
-		sem_op.sem_op = -1;
-		sem_op.sem_flg = 0;
-		semop(sem_set_id, &sem_op, 1);
-		printf("consumer: '%d'\n", i);
-		fflush(stdout);
-	    }
-	    break;
-	default:	/* parent process here */
-	    for (i=0; i<NUM_LOOPS; i++) {
-		printf("producer: '%d'\n", i);
-		fflush(stdout);
-		/* increase the value of the semaphore by 1. */
-		sem_op.sem_num = 0;
-sem_op.sem_op = 1;
-		sem_op.sem_flg = 0;
-		semop(sem_set_id, &sem_op, 1);
-		/* pause execution for a little bit, to allow the */
-		/* child process to run and handle some requests. */
-		/* this is done about 25% of the time.            */
-		if (rand() > 3*(RAND_MAX/4)) {
-	    	    delay.tv_sec = 0;
-	    	    delay.tv_nsec = 10;
-	    	    //nanosleep(&delay, NULL);
-		                      sleep(10); }
-if(NUM_LOOPS>=10)    {
-	    semctl(sem_set_id, 0, IPC_RMID, sem_val) ;} // Remove the sem_set_id
-	    }}
-	    break;
+    if (semctl(sem_set_id, 0, SETVAL, sem_val) == -1) {
+        perror("semctl");
+        exit(1);
     }
+
+    // Fork a child process
+    child_pid = fork();
+
+    if (child_pid < 0) {
+        perror("fork");
+        exit(1);
+    }
+
+    if (child_pid == 0) {  
+        // CHILD PROCESS: Consumer
+        for (int i = 0; i < NUM_LOOPS; i++) {
+            wait_semaphore(sem_set_id);  // Wait for producer
+            printf("consumer: '%d'\n", i);
+            fflush(stdout);
+        }
+        exit(0);
+    } else {  
+        // PARENT PROCESS: Producer
+        for (int i = 0; i < NUM_LOOPS; i++) {
+            printf("producer: '%d'\n", i);
+            fflush(stdout);
+            signal_semaphore(sem_set_id);  // Signal consumer
+            usleep(500000); // Sleep to allow consumer to process
+        }
+
+        // Wait for child to finish
+        wait(NULL);
+
+        // Remove the semaphore set
+        semctl(sem_set_id, 0, IPC_RMID, sem_val);
+        printf("Semaphore removed.\n");
+    }
+
     return 0;
 }
+
 ```
 
 
-## OUTPUT:
+## OUTPUT
 
-$ ./sem.o
-
-![image](https://github.com/22008686/Linux-IPC-Semaphores/assets/118916413/cb136fa8-bbe3-4cc8-a32a-ebfc47b70101)
+$ ./sem.o 
 
 $ ipcs
+<img width="1031" height="864" alt="Screenshot 2025-11-26 141115" src="https://github.com/user-attachments/assets/bd4e1b38-1070-4263-8956-3fcd7fc1957e" />
 
-![image](https://github.com/22008686/Linux-IPC-Semaphores/assets/118916413/284ed012-a1c5-461f-aba9-98b9a1f2d343)
 
-## RESULT:
+<img width="800" height="605" alt="Screenshot 2025-10-14 101344" src="https://github.com/user-attachments/assets/97b602c2-4369-4459-a2c4-2eb73dd82dd9" />
 
+<img width="803" height="611" alt="Screenshot 2025-10-14 101357" src="https://github.com/user-attachments/assets/0fdf53b9-0c2f-4cf4-b369-97c36c1c5c9e" />
+
+<img width="796" height="612" alt="Screenshot 2025-10-14 101411" src="https://github.com/user-attachments/assets/9fffb322-285a-43a0-b509-7375eaedea55" />
+<img width="1068" height="864" alt="Screenshot 2025-11-26 141116" src="https://github.com/user-attachments/assets/cbea034f-1065-45a1-bfa6-014b2a0ffee9" />
+<img width="1330" height="704" alt="Screenshot 2025-11-26 141117" src="https://github.com/user-attachments/assets/c1d09041-0b44-4b19-8029-920506432d7b" />
+
+
+
+
+# RESULT:
 The program is executed successfully.
